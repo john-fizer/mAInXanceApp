@@ -1,0 +1,300 @@
+================================================================================
+                        KEY CODE SNIPPETS & FUNCTIONS
+================================================================================
+
+1. DATA LOADING & CLEANING
+─────────────────────────────────────────────────────────────────────────────
+
+df = pd.read_csv("Work Orders with description, and notes.csv", 
+                 encoding='ISO-8859-1',
+                 dtype=str,
+                 low_memory=False)
+
+# Drop rows with all missing values
+df = df.dropna(how='all')
+
+# Keep only rows with numeric WO numbers
+df = df[df['WO No.'].astype(str).str.match(r'^\d+$')]
+df['WO No.'] = df['WO No.'].astype(str).str.strip()
+
+# Strip whitespace and keep only rows with both Description and Text
+df['Description'] = df['Description'].astype(str).str.strip()
+df['Text'] = df['Text'].astype(str).str.strip()
+df = df[~((df['Description'].str.strip() == "") & (df['Text'].str.strip() == ""))]
+df = df[df['Text'].notna() & (df['Text'].str.strip() != "") & 
+        (df['Text'].str.lower().str.strip() != "nan")]
+
+# Create cleaned versions (lowercase, remove punctuation)
+df['Description_cleaned'] = df['Description'].str.lower()\
+    .str.replace(r'[^\w\s]', '', regex=True).str.strip()
+df['Text_cleaned'] = df['Text'].str.lower()\
+    .str.replace(r'[^\w\s]', '', regex=True).str.strip()
+
+────────────────────────────────────────────────────────────────────────────────
+
+2. UNSUPERVISED CLUSTERING (KMEANS)
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+
+# Vectorize technician notes
+tfidf = TfidfVectorizer(stop_words='english')
+X_notes = tfidf.fit_transform(df['Text_cleaned'])
+
+# Apply KMeans clustering
+kmeans = KMeans(n_clusters=5, random_state=42)
+df['Note_Cluster'] = kmeans.fit_predict(X_notes)
+
+# Result: New column 'Note_Cluster' with values 0-4
+
+────────────────────────────────────────────────────────────────────────────────
+
+3. CLUSTER INTERPRETATION (TOP WORDS ANALYSIS)
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+
+df_reset = df.reset_index(drop=True)
+tfidf = TfidfVectorizer(stop_words='english', max_features=5000)
+X = tfidf.fit_transform(df_reset['Text_cleaned'])
+feature_names = np.array(tfidf.get_feature_names_out())
+
+# Show top 10 words per cluster
+top_n = 10
+for cluster in sorted(df_reset['Note_Cluster'].unique()):
+    cluster_mask = df_reset['Note_Cluster'] == cluster
+    cluster_tfidf = X[cluster_mask]
+    
+    mean_tfidf = cluster_tfidf.mean(axis=0).A1
+    top_indices = mean_tfidf.argsort()[::-1][:top_n]
+    top_words = feature_names[top_indices]
+    
+    print(f"Cluster {cluster}: {', '.join(top_words)}")
+
+────────────────────────────────────────────────────────────────────────────────
+
+4. SUPERVISED CLASSIFICATION MODEL
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+
+# Prepare dataset
+X = df['Description_cleaned']
+y = df['Note_Cluster']
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Create pipeline
+pipeline = Pipeline([
+    ('tfidf', TfidfVectorizer()),
+    ('clf', LogisticRegression(max_iter=1000))
+])
+
+# Train model
+pipeline.fit(X_train, y_train)
+
+# Evaluate
+y_pred = pipeline.predict(X_test)
+print(classification_report(y_test, y_pred))
+
+────────────────────────────────────────────────────────────────────────────────
+
+5. CONFUSION MATRIX VISUALIZATION
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.show()
+
+────────────────────────────────────────────────────────────────────────────────
+
+6. SILHOUETTE SCORE ANALYSIS (K-VALUE OPTIMIZATION)
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Sample data to speed up calculations
+sample_size = 5000
+sample_indices = np.random.choice(X_notes.shape[0], sample_size, replace=False)
+X_sample = X_notes[sample_indices]
+
+# Calculate silhouette scores for different k values
+scores = []
+ks = range(2, 10)
+for k in ks:
+    kmeans = KMeans(n_clusters=k, n_init=10, max_iter=200, random_state=42)
+    labels = kmeans.fit_predict(X_sample)
+    score = silhouette_score(X_sample, labels)
+    scores.append(score)
+
+# Plot results
+plt.plot(ks, scores, marker='o')
+plt.title('Silhouette Score by K')
+plt.xlabel('Number of Clusters (k)')
+plt.ylabel('Silhouette Score')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+────────────────────────────────────────────────────────────────────────────────
+
+7. SIMILARITY SEARCH FUNCTION (KEY FEATURE)
+─────────────────────────────────────────────────────────────────────────────
+
+def find_me_fix(input_description, top_n=10):
+    """Find top N most similar historical work orders"""
+    desc_clean = input_description.lower().strip()
+    input_vec = tfidf_vectorizer.transform([desc_clean])
+    similarities = cosine_similarity(input_vec, tfidf_matrix).flatten()
+    top_indices = similarities.argsort()[-top_n:][::-1]
+    
+    return df_notes_only.iloc[top_indices][['Description', 'Text', 'WO No.']]
+
+# Example usage:
+find_me_fix("conveyor not working", top_n=10)
+# Returns top 10 work orders with similar descriptions
+
+────────────────────────────────────────────────────────────────────────────────
+
+8. COMPLETE PREDICTION FUNCTION (FOR DEPLOYMENT)
+─────────────────────────────────────────────────────────────────────────────
+
+from sklearn.metrics.pairwise import cosine_similarity
+
+def get_predictions(description_input, pipeline, df, top_n=5):
+    """
+    Given a work order description, predicts the note cluster and returns
+    the top_n most similar technician notes from that cluster.
+    
+    Parameters:
+        description_input (str): The new work order description
+        pipeline (sklearn.Pipeline): Your trained TF-IDF + classifier pipeline
+        df (pd.DataFrame): The DataFrame with 'Description_cleaned', 
+                          'Text_cleaned', and 'Note_Cluster'
+        top_n (int): Number of similar notes to return (default is 5)
+        
+    Returns:
+        List of top_n matching notes (strings)
+    """
+    
+    # Predict the most likely note cluster
+    predicted_cluster = pipeline.predict([description_input])[0]
+    
+    # Filter DataFrame for that cluster
+    cluster_df = df[df['Note_Cluster'] == predicted_cluster]
+    
+    # TF-IDF vectorize the input description
+    input_vec = pipeline.named_steps['tfidf'].transform([description_input])
+    
+    # TF-IDF vectorize the descriptions in the predicted cluster
+    cluster_vecs = pipeline.named_steps['tfidf'].transform(
+        cluster_df['Description_cleaned']
+    )
+    
+    # Cosine similarity
+    similarities = cosine_similarity(input_vec, cluster_vecs).flatten()
+    
+    # Top N matches
+    top_indices = similarities.argsort()[-top_n:][::-1]
+    
+    # Pull and return the matching notes
+    top_matches = cluster_df.iloc[top_indices][
+        ['Description', 'Text_cleaned', 'WO No.']
+    ]
+    
+    print(f"Predicted Cluster: {predicted_cluster}")
+    print(f"Input Description: {description_input}")
+    print(f"Top {top_n} Similar Notes in This Cluster:\n")
+    
+    for i, row in top_matches.iterrows():
+        print(f"- WO #{row['WO No.']}: {row['Text_cleaned']}")
+    
+    return top_matches
+
+# Example usage:
+get_predictions(
+    description_input="machine won't turn on",
+    pipeline=pipeline,
+    df=df,
+    top_n=5
+)
+
+────────────────────────────────────────────────────────────────────────────────
+
+9. EXAMPLE PREDICTION TEST
+─────────────────────────────────────────────────────────────────────────────
+
+# Simple test
+description_input = "machine won't start after power outage"
+predicted_cluster = pipeline.predict([description_input])[0]
+
+print("Predicted Cluster:", predicted_cluster)
+print(df[df['Note_Cluster'] == predicted_cluster]['Text_cleaned'].sample(5, 
+                                                                   random_state=42))
+
+# Output: Cluster 0
+# Sample outputs from that cluster show similar power-related fixes
+
+────────────────────────────────────────────────────────────────────────────────
+
+10. CLUSTER DISTRIBUTION VISUALIZATION
+─────────────────────────────────────────────────────────────────────────────
+
+import matplotlib.pyplot as plt
+
+df['Note_Cluster'].value_counts().sort_index().plot(
+    kind='bar',
+    title='Cluster Distribution',
+    xlabel='Cluster',
+    ylabel='Count'
+)
+plt.show()
+
+# Shows class imbalance: Cluster 0 dominates with ~73% of data
+
+================================================================================
+                         ARCHITECTURE SUMMARY
+================================================================================
+
+SINGLE ENTRY POINT FOR USERS:
+  get_predictions(description_input, pipeline, df, top_n=5)
+  
+  This function:
+  1. Predicts most likely technician action cluster
+  2. Filters to that cluster
+  3. Finds most similar historical work orders
+  4. Returns top N matches with solutions
+  
+  User benefits:
+  - Single function to call
+  - Clear output with suggested fixes
+  - Leverages both prediction and similarity search
+  - Can be easily wrapped in a web API or app
+
+LIMITATIONS OF CURRENT IMPLEMENTATION:
+  - Heavy bias toward Cluster 0 (will rarely predict 1-4)
+  - Technician names in features hurt interpretability
+  - TF-IDF may miss semantic meaning
+  - No handling of out-of-domain descriptions
+  - No confidence scores or uncertainty quantification
+
+================================================================================

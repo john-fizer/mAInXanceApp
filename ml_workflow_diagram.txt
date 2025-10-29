@@ -1,0 +1,169 @@
+================================================================================
+                    mAInXanceApp ML WORKFLOW - COMPLETE PIPELINE
+================================================================================
+
+PHASE 1: DATA PREPARATION
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Raw CSV: 1M+ rows                                                           │
+│ ├─ WO No. (Work Order ID)                                                  │
+│ ├─ Description (Problem summary)                                            │
+│ └─ Text (Technician notes)                                                 │
+│                                                                              │
+│ Data Quality Issues:                                                        │
+│ ✗ Many #N/A values                                                         │
+│ ✗ Invalid WO numbers                                                       │
+│ ✗ Empty descriptions/notes                                                 │
+│ ✗ Technician names (BRAD, CHAD, FOX)                                       │
+│ ✗ Inconsistent formatting                                                  │
+│                                                                              │
+│ Cleaning Pipeline:                                                          │
+│ 1. Drop all-empty rows                                                      │
+│ 2. Filter valid WO numbers (numeric only)                                   │
+│ 3. Remove empty Description or Text                                         │
+│ 4. Strip whitespace                                                         │
+│ 5. Create cleaned columns (lowercase, remove punctuation)                   │
+│                                                                              │
+│ Result: ~40K valid records (from 93K with content, from 1M raw)            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+PHASE 2: UNSUPERVISED CLUSTERING (Generate Labels)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Input: Text_cleaned (technician notes from 40K records)                    │
+│                                                                              │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ TfidfVectorizer(stop_words='english', max_features=5000)    │            │
+│ │ → Converts text to weighted word vectors                    │            │
+│ │ → Learns importance of each word                            │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ KMeans(n_clusters=5, random_state=42)                       │            │
+│ │ → Groups similar notes into 5 behavior clusters             │            │
+│ │ → Selected k=5 based on silhouette score (k=2 to 9)        │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ Output: Note_Cluster (0-4) for each record                                  │
+│                                                                              │
+│ Cluster Characteristics:                                                    │
+│ ┌────┬──────────────────┬──────────────────────────┬──────────────┐       │
+│ │ ID │ Name             │ Top Words                │ Size (%)     │       │
+│ ├────┼──────────────────┼──────────────────────────┼──────────────┤       │
+│ │ 0  │ Adjust/Clean     │ reset, adjusted, cleaned │ 73% (8250)   │       │
+│ │ 1  │ Replace Parts    │ replaced, fuse, belt     │ 19% (2096)   │       │
+│ │ 2  │ Simple Complete  │ complete, [names]        │ 2.5% (282)   │       │
+│ │ 3  │ Repair Broken    │ broken, repaired, wire   │ 2.5% (287)   │       │
+│ │ 4  │ Electrical/Wire  │ repaired, wiring, leak   │ 3.4% (388)   │       │
+│ └────┴──────────────────┴──────────────────────────┴──────────────┘       │
+│                                                                              │
+│ Problem: SEVERE CLASS IMBALANCE                                             │
+│ ⚠ Cluster 0 dominates (73%), others are minority                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+PHASE 3: SUPERVISED CLASSIFICATION (Prediction Model)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Create Supervised Dataset:                                                  │
+│ ├─ X = Description_cleaned (work order problem descriptions)               │
+│ └─ y = Note_Cluster (labels generated from Phase 2)                        │
+│                                                                              │
+│ Train/Test Split: 80/20                                                     │
+│                                                                              │
+│ PIPELINE:                                                                   │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ 1. TfidfVectorizer()                                         │            │
+│ │    Input: Description_cleaned (text)                        │            │
+│ │    Output: TF-IDF feature matrix                            │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ 2. LogisticRegression(max_iter=1000)                        │            │
+│ │    Input: TF-IDF features                                   │            │
+│ │    Output: Predicted cluster (0-4)                          │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ Performance Metrics:                                                        │
+│ ┌────┬───────────┬────────┬─────────┬──────────┬──────────────┐           │
+│ │ CL │ Precision │ Recall │ F1      │ Support  │ Interpretation│          │
+│ ├────┼───────────┼────────┼─────────┼──────────┼──────────────┤           │
+│ │ 0  │ 0.76      │ 0.96   │ 0.85    │ 8,250    │ Good ✓       │           │
+│ │ 1  │ 0.47      │ 0.19   │ 0.27    │ 2,096    │ Poor ✗       │           │
+│ │ 2  │ 1.00      │ 0.01   │ 0.02    │ 282      │ Very Poor ✗  │           │
+│ │ 3  │ 0.38      │ 0.05   │ 0.09    │ 287      │ Very Poor ✗  │           │
+│ │ 4  │ 0.27      │ 0.03   │ 0.06    │ 388      │ Very Poor ✗  │           │
+│ └────┴───────────┴────────┴─────────┴──────────┴──────────────┘           │
+│                                                                              │
+│ Overall Accuracy: 74%                                                       │
+│ Weighted F1-Score: 0.67                                                     │
+│                                                                              │
+│ ⚠ ISSUE: Model is biased toward Cluster 0 due to class imbalance          │
+│ ⚠ ISSUE: Minority classes (2-4) almost never predicted                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+PHASE 4: INFERENCE & SIMILARITY SEARCH
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ User Input: Work order description (string)                                │
+│                                                                              │
+│ Process:                                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ Step 1: PREDICTION                                           │            │
+│ │ Input:  "machine won't turn on"                             │            │
+│ │ Model:  trained_pipeline.predict()                          │            │
+│ │ Output: Predicted cluster = 0                               │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ Step 2: FILTER                                               │            │
+│ │ Action: Get all records where Note_Cluster == 0             │            │
+│ │ Result: ~8,250 historical work orders                       │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ Step 3: VECTORIZE & SIMILARITY SEARCH                        │            │
+│ │ 1. TF-IDF vectorize input description                        │            │
+│ │ 2. TF-IDF vectorize all filtered descriptions                │            │
+│ │ 3. Compute cosine similarity between input and all           │            │
+│ │ 4. Return top 5-10 most similar work orders                 │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+│                         ↓                                                    │
+│ Output: Top Similar Work Orders                                             │
+│ ┌─────────────────────────────────────────────────────────────┐            │
+│ │ WO #20115480: 24 volt power supply bad - ordered new one... │            │
+│ │ WO #20162695: The disconnect is wore out                    │            │
+│ │ WO #20084986: Cleaned scanner spark igniter and reseated... │            │
+│ │ WO #20094577: Power supply is bad - ordered new one...      │            │
+│ │ WO #20225528: Breaker was tripped, battery was bad...       │            │
+│ └─────────────────────────────────────────────────────────────┘            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+                            SUMMARY OF ISSUES
+================================================================================
+
+HIGH SEVERITY:
+[1] Class Imbalance
+    - Cluster 0: 73% of data
+    - Model defaults to predicting Cluster 0
+    - Minority classes (2-4) have <10% recall
+
+[2] Data Quality
+    - Technician names contaminate text features
+    - Filler words ("completed", "done") should be removed
+    - README notes this issue but it's not fixed in code
+
+MEDIUM SEVERITY:
+[3] Model Performance
+    - Overall accuracy 74% (moderate)
+    - Precision for minority classes < 0.5
+    - Cannot reliably predict Clusters 2-4
+
+[4] Feature Engineering
+    - TF-IDF may miss semantic relationships
+    - No contextual embeddings (BERT, etc.)
+    - Stop words may remove domain-specific terms
+
+LOW SEVERITY:
+[5] Code Organization
+    - Single notebook file (hard to maintain/deploy)
+    - No modular structure
+    - No configuration management
+
+================================================================================
